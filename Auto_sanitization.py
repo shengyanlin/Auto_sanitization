@@ -37,15 +37,18 @@ def shift_char_backward(c: str) -> str:
         # '_' remains unaffected; other symbols are returned as is
         return c
 
+# ===== sanitize / desanitize 單一字串 =====
+
 def sanitize(s: str) -> str:
     """
     Shift the first two and the last two non-space characters forward by one.
-    如果是空白、NaN 或 None，則回傳 "N/A"
+    如果是空白、NaN 或 None，則回傳 "N/A"。
     """
     # 先把 s 轉成字串
     s = str(s)
 
     # 如果為空字串、只有空白、或是 "nan"/"none" 都直接回傳 "N/A"
+    # 雖然我們在外部流程中也會先做 fillna/replace，但這裡保留容錯處理。
     if not s.strip() or s.lower() in ("nan", "none"):
         return "N/A"
 
@@ -71,7 +74,6 @@ def sanitize(s: str) -> str:
         j -= 1
     
     return ''.join(s_list)
-
 
 def desanitize(s: str) -> str:
     """
@@ -101,90 +103,6 @@ def desanitize(s: str) -> str:
     
     return ''.join(s_list)
 
-# ===== Utility functions for reading/writing data =====
-
-def read_data_frames(input_folder: str) -> dict:
-    """
-    從指定資料夾中讀取所有 .xlsx 與 .csv 檔，回傳一個 dict 結構：
-    {
-      "file1.xlsx": {
-          'format': 'xlsx',
-          'sheets': {
-              'Sheet1': df1,
-              'Sheet2': df2,
-          }
-      },
-      "file2.csv": {
-          'format': 'csv',
-          'df': df_csv
-      }
-    }
-    也會在過程中印出讀取進度。
-    """
-    if not os.path.exists(input_folder):
-        os.makedirs(input_folder)
-
-    file_list = [f for f in os.listdir(input_folder) if f.endswith(('.xlsx', '.csv'))]
-
-    data_frames = {}
-    
-    print("\nFollowing files are read:")
-    for file in file_list:
-        file_path = os.path.join(input_folder, file)
-        if file.endswith('.xlsx'):
-            excel_file = pd.ExcelFile(file_path, engine='openpyxl')
-            sheet_dict = {}
-            for sheet_name in excel_file.sheet_names:
-                df = pd.read_excel(excel_file, sheet_name=sheet_name)
-                sheet_dict[sheet_name] = df
-            data_frames[file] = {
-                'format': 'xlsx',
-                'sheets': sheet_dict
-            }
-            print(f"{file_path} (Sheets: {excel_file.sheet_names})")
-        else:  # CSV
-            try:
-                df = pd.read_csv(file_path, encoding='utf-8')
-            except UnicodeDecodeError:
-                df = pd.read_csv(file_path, encoding='gbk')
-            data_frames[file] = {
-                'format': 'csv',
-                'df': df
-            }
-            print(file_path)
-
-    return data_frames
-
-def write_data_frames(data_frames: dict, output_folder: str, sanitized: bool = False):
-    """
-    將 data_frames 寫入指定的資料夾中。
-    若 sanitized=True，則輸出的檔名會在副檔名前加上 "_sanitized"。
-    否則維持原檔名輸出。
-    """
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-
-    print("\nFollowing files are saved:")
-    for file_name, content in data_frames.items():
-        base_name, ext = os.path.splitext(file_name)
-        # 如果要在檔名加上 _sanitized
-        if sanitized:
-            output_file_name = base_name + "_sanitized" + ext
-        else:
-            output_file_name = file_name
-
-        output_path = os.path.join(output_folder, output_file_name)
-        
-        if content['format'] == 'xlsx':
-            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                for sheet_name, df in content['sheets'].items():
-                    df.to_excel(writer, sheet_name=sheet_name, index=False)
-            print(output_path)
-        else:  # CSV
-            df = content['df']
-            df.to_csv(output_path, index=False, encoding='utf-8-sig')
-            print(output_path)
-
 # ===== Utility functions for column operations =====
 
 def insert_sanitized_columns(df: pd.DataFrame, columns_to_add: list):
@@ -192,18 +110,26 @@ def insert_sanitized_columns(df: pd.DataFrame, columns_to_add: list):
     在 df 中，對於 columns_to_add 裏列出的欄位，緊接在它後面插入一個對應的 {col}_sanitized 欄位
     (透過 sanitize() 函式來產生新值)。
     依欄位的 index 由大到小插入，避免影響後面欄位的插入位置。
+
+    除了對指定欄位做字串位移，會先以向量化方式把空值、空白、nan、none 轉成 'N/A'。
     """
     # 先依照原欄位在 df.columns 中的索引位置，從「大到小」排序
     columns_with_locs = [(col, df.columns.get_loc(col)) for col in columns_to_add]
     columns_with_locs.sort(key=lambda x: x[1], reverse=True)
     
     for col, loc_val in columns_with_locs:
+        # 先用向量化方法處理空白、nan、none → 'N/A'
+        df[col] = df[col].fillna('N/A') \
+                         .replace(r'^\s*$', 'N/A', regex=True) \
+                         .replace(['none', 'nan'], 'N/A')
+
         new_col_name = f"{col}_sanitized"
+        # 再逐列呼叫 sanitize()
         df.insert(loc_val + 1, new_col_name, df[col].apply(sanitize))
 
 def insert_desanitized_columns(df: pd.DataFrame, columns_to_process: list):
     """
-    在 df 中，對於 columns_to_process 裏列出的欄位，緊接在它後面插入一個對應的 External Part欄位
+    在 df 中，對於 columns_to_process 裏列出的欄位，緊接在它後面插入一個對應的 'External Part' 欄位
     (透過 desanitize() 函式來產生新值)。
     依欄位的 index 由大到小插入，避免影響後面欄位的插入位置。
     """
@@ -214,25 +140,27 @@ def insert_desanitized_columns(df: pd.DataFrame, columns_to_process: list):
         if col == 'External part ID':
             df.insert(loc_val + 1, 'External Part', df[col].apply(desanitize))
 
-# ===== Main workflow functions =====
+# ===== New: 逐檔讀寫檔案 (不再一次全部讀進記憶體) =====
 
-def sanitize_data():
+def process_file_sanitization(file_path: str, output_folder: str):
     """
-    1. 從 'Unsanitized' 資料夾讀取所有 .xlsx/.csv 檔案
-    2. 如果 'External Part'/'Internal Part'/'Internal Part(Old)'/'Internal Part(New)' 欄位存在，就插入對應的 '*_sanitized' 欄位
-    3. 將結果輸出到 'Sanitized_當天日期' 資料夾，檔名加上 "_sanitized"
+    讀取單一檔案 (xlsx/csv)，對需要的欄位執行 insert_sanitized_columns 後，立刻寫出。
+    避免大量檔案同時存在記憶體中。
     """
-    print("\nSanitizing process started...")
+    base_name, ext = os.path.splitext(os.path.basename(file_path))
+    output_file_name = base_name + "_sanitized" + ext
+    output_path = os.path.join(output_folder, output_file_name)
 
-    input_folder = 'Unsanitized'
-    output_folder = 'Sanitized'
+    if ext.lower() == '.xlsx':
+        excel_file = pd.ExcelFile(file_path, engine='openpyxl')
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            for sheet_name in excel_file.sheet_names:
+                df = pd.read_excel(excel_file, sheet_name=sheet_name)
+                
+                #print all column names in this sheet
+                print(f"Sheet: {sheet_name} - Columns: {df.columns}")
 
-    data_frames = read_data_frames(input_folder)
-
-    print("\nFollowing files (and sheets) are sanitized:")
-    for file_name, content in data_frames.items():
-        if content['format'] == 'xlsx':
-            for sheet_name, df in content['sheets'].items():
+                # 需要插入 sanitized 欄位的欄位清單
                 columns_to_add = []
                 if 'External Part' in df.columns:
                     columns_to_add.append('External Part')
@@ -242,34 +170,124 @@ def sanitize_data():
                     columns_to_add.append('Internal Part(Old)')
                 if 'Internal Part(New)' in df.columns:
                     columns_to_add.append('Internal Part(New)')
-                
+                if "ex_part" in df.columns:
+                    columns_to_add.append("ex_part")
+
+                print("Columns to add: ", columns_to_add)
                 if columns_to_add:
                     insert_sanitized_columns(df, columns_to_add)
-                    print(f"Unsanitized\\{file_name} - Sheet: {sheet_name}")
+
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    elif ext.lower() == '.csv':
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8')
+        except UnicodeDecodeError:
+            df = pd.read_csv(file_path, encoding='gbk')
+
+        columns_to_add = []
+        if 'External Part' in df.columns:
+            columns_to_add.append('External Part')
+        if 'Internal Part' in df.columns:
+            columns_to_add.append('Internal Part')
+        if 'Internal Part(Old)' in df.columns:
+            columns_to_add.append('Internal Part(Old)')
+        if 'Internal Part(New)' in df.columns:
+            columns_to_add.append('Internal Part(New)')
+        if "ex_part" in df.columns:
+            columns_to_add.append("ex_part")
+
+        if columns_to_add:
+            insert_sanitized_columns(df, columns_to_add)
+
+        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+
+def process_file_desanitization(file_path: str, output_folder: str):
+    """
+    讀取單一檔案 (xlsx/csv)，對需要的欄位執行 insert_desanitized_columns 後，立刻寫出。
+    注意此需求中，檔名不改變 (不加 _sanitized)。
+    """
+    base_name, ext = os.path.splitext(os.path.basename(file_path))
+    output_path = os.path.join(output_folder, base_name + ext)  # 不改變檔名
+
+    if ext.lower() == '.xlsx':
+        excel_file = pd.ExcelFile(file_path, engine='openpyxl')
+        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+            for sheet_name in excel_file.sheet_names:
+                df = pd.read_excel(excel_file, sheet_name=sheet_name)
+
+                columns_to_process = []
+                if 'External part ID' in df.columns:
+                    columns_to_process.append('External part ID')
+
+                if columns_to_process:
+                    insert_desanitized_columns(df, columns_to_process)
+                else:
+                    print(f"The file {file_path} (Sheet: {sheet_name}) does not contain sanitized columns.")
+
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+    elif ext.lower() == '.csv':
+        try:
+            df = pd.read_csv(file_path, encoding='utf-8')
+        except UnicodeDecodeError:
+            df = pd.read_csv(file_path, encoding='gbk')
+
+        columns_to_process = []
+        if 'External part ID' in df.columns:
+            columns_to_process.append('External part ID')
+
+        if columns_to_process:
+            insert_desanitized_columns(df, columns_to_process)
         else:
-            df = content['df']
-            columns_to_add = []
-            if 'External Part' in df.columns:
-                columns_to_add.append('External Part')
-            if 'Internal Part' in df.columns:
-                columns_to_add.append('Internal Part')
-            if 'Internal Part(Old)' in df.columns:
-                columns_to_add.append('Internal Part(Old)')
-            if 'Internal Part(New)' in df.columns:
-                columns_to_add.append('Internal Part(New)')
+            print(f"The file {file_path} does not contain sanitized columns.")
 
-            if columns_to_add:
-                insert_sanitized_columns(df, columns_to_add)
-                print(f"Unsanitized\\{file_name}")
+        df.to_csv(output_path, index=False, encoding='utf-8-sig')
 
-    # 另存檔案
-    write_data_frames(data_frames, output_folder, sanitized=True)
+# ===== Main workflow functions =====
 
+def sanitize_data():
+    """
+    1. 從 'Unsanitized' 資料夾讀取所有 .xlsx/.csv 檔案 (檔案大也不怕，一次處理一檔)
+    2. 如果 'External Part'/'Internal Part'/'Internal Part(Old)'/'Internal Part(New)' 欄位存在，就插入對應的 '*_sanitized' 欄位
+    3. 將結果輸出到 'Sanitized' 資料夾，檔名加上 "_sanitized"
+    """
+    print("\nSanitizing process started...")
+
+    input_folder = 'Unsanitized'
+    output_folder = 'Sanitized'
+
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+
+    # 收集所有要處理的檔案
+    file_list = [
+        f for f in os.listdir(input_folder)
+        if f.endswith(('.xlsx', '.csv'))
+    ]
+
+    if not file_list:
+        print("No .xlsx or .csv files found in 'Unsanitized' folder.")
+        return
+
+    print("\nFollowing files will be sanitized:")
+    for file_name in file_list:
+        print(f" - {file_name}")
+    # print()
+
+    # 逐檔處理並輸出
+    for file_name in file_list:
+        file_path = os.path.join(input_folder, file_name)
+        print(f"\nProcessing file: {file_name}")
+        process_file_sanitization(file_path, output_folder)
+
+    print("\nSanitizing process completed.")
+    
 
 def desanitize_data():
     """
-    1. 從 'Undesanitized' 資料夾讀取所有 .xlsx/.csv 檔案
-    2. 如果 'external_id_sanitized'/'internal_id_sanitized' 欄位存在，就插入對應的 '*_desanitized' 欄位
+    1. 從 'Undesanitized' 資料夾讀取所有 .xlsx/.csv 檔案 (檔案大也不怕，一次處理一檔)
+    2. 如果 'External part ID' 欄位存在，就插入對應的 'External Part' 欄位 (desanitize)
     3. 將結果輸出到 'Desanitized' 資料夾 (檔名不更動)
     """
     print("\nDesanitizing process started...")
@@ -277,35 +295,28 @@ def desanitize_data():
     input_folder = 'Undesanitized'
     output_folder = 'Desanitized'
 
-    data_frames = read_data_frames(input_folder)
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
 
-    print("\nFollowing files are desanitized:")
-    for file_name, content in data_frames.items():
-        if content['format'] == 'xlsx':
-            for sheet_name, df in content['sheets'].items():
-                columns_to_process = []
-                if 'External part ID' in df.columns:
-                    columns_to_process.append('External part ID')
+    file_list = [
+        f for f in os.listdir(input_folder)
+        if f.endswith(('.xlsx', '.csv'))
+    ]
 
-                if columns_to_process:
-                    insert_desanitized_columns(df, columns_to_process)
-                    print(f"Undesanitized\\{file_name} - Sheet: {sheet_name}")
-                else:
-                    print(f"The file {file_name} (Sheet: {sheet_name}) does not contain sanitized columns.")
-        else:
-            df = content['df']
-            columns_to_process = []
-            if 'External part ID' in df.columns:
-                columns_to_process.append('External part ID')
+    if not file_list:
+        print("No .xlsx or .csv files found in 'Undesanitized' folder.")
+        return
 
-            if columns_to_process:
-                insert_desanitized_columns(df, columns_to_process)
-                print(f"Undesanitized\\{file_name}")
-            else:
-                print(f"The file {file_name} does not contain sanitized columns.")
+    print("\nFollowing files will be desanitized:")
+    for file_name in file_list:
+        print(f" - {file_name}")
+    print()
 
-    # 另存檔案
-    write_data_frames(data_frames, output_folder, sanitized=False)
+    for file_name in file_list:
+        file_path = os.path.join(input_folder, file_name)
+        process_file_desanitization(file_path, output_folder)
+
+    print("\nDesanitizing process completed.")
 
 
 def main():
@@ -326,3 +337,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ex_part、
