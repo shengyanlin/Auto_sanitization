@@ -1,190 +1,300 @@
 import os
+import csv
+import time
 import pandas as pd
+from openpyxl import load_workbook
 
-# ===== Character shifting utility functions =====
+# ===== 1. 建立字典查表 (forward/backward) 用於字元位移 =====
+
+_forward_map = {}
+_backward_map = {}
+
+# 小寫 a-z
+for i in range(ord('a'), ord('z') + 1):
+    c = chr(i)
+    nxt_c = chr(i + 1) if i < ord('z') else 'a'
+    _forward_map[c] = nxt_c
+    _backward_map[nxt_c] = c  # 反向
+
+# 大寫 A-Z
+for i in range(ord('A'), ord('Z') + 1):
+    c = chr(i)
+    nxt_c = chr(i + 1) if i < ord('Z') else 'A'
+    _forward_map[c] = nxt_c
+    _backward_map[nxt_c] = c
+
+# 數字 0-9
+digits = '0123456789'
+for i in range(10):
+    c = digits[i]
+    nxt_c = digits[(i + 1) % 10]  # 9 -> 0
+    _forward_map[c] = nxt_c
+    _backward_map[nxt_c] = c
 
 def shift_char_forward(c: str) -> str:
-    """
-    Shift letters and digits forward by one.
-    For example: 'a' -> 'b', 'z' -> 'a', '9' -> '0'.
-    Underscore '_' is unaffected; other symbols are returned as is.
-    """
-    if c.isalpha():
-        if c.islower():
-            return 'a' if c == 'z' else chr(ord(c) + 1)
-        else:
-            return 'A' if c == 'Z' else chr(ord(c) + 1)
-    elif c.isdigit():
-        return '0' if c == '9' else str(int(c) + 1)
-    else:
-        # '_' remains unaffected; other symbols are returned as is
+    if c == '_':
         return c
+    return _forward_map.get(c, c)
 
 def shift_char_backward(c: str) -> str:
-    """
-    Shift letters and digits backward by one.
-    For example: 'b' -> 'a', 'a' -> 'z', '0' -> '9'.
-    Underscore '_' is unaffected; other symbols are returned as is.
-    """
-    if c.isalpha():
-        if c.islower():
-            return 'z' if c == 'a' else chr(ord(c) - 1)
-        else:
-            return 'Z' if c == 'A' else chr(ord(c) - 1)
-    elif c.isdigit():
-        return '9' if c == '0' else str(int(c) - 1)
-    else:
-        # '_' remains unaffected; other symbols are returned as is
+    if c == '_':
         return c
+    return _backward_map.get(c, c)
 
-# ===== sanitize / desanitize 單一字串 =====
+# ===== 2. sanitize / desanitize 單一字串 =====
 
 def sanitize(s: str) -> str:
-    """
-    Shift the first two and the last two non-space characters forward by one.
-    如果是空白、NaN 或 None，則回傳 "N/A"。
-    """
-    # 先把 s 轉成字串
-    s = str(s)
+    if s is None:
+        return "N/A"
 
-    # 如果為空字串、只有空白、或是 "nan"/"none" 都直接回傳 "N/A"
-    # 雖然我們在外部流程中也會先做 fillna/replace，但這裡保留容錯處理。
+    s = str(s)
     if not s.strip() or s.lower() in ("nan", "none"):
         return "N/A"
 
-    s_list = list(s)
-    length = len(s_list)
+    arr = list(s)
+    length = len(arr)
 
-    # Process the first two non-space characters
+    # 前 2
     i = 0
     shifted_start = 0
     while shifted_start < 2 and i < length:
-        if s_list[i] != ' ':
-            s_list[i] = shift_char_forward(s_list[i])
+        if arr[i] != ' ':
+            arr[i] = shift_char_forward(arr[i])
             shifted_start += 1
         i += 1
-    
-    # Process the last two non-space characters
+
+    # 後 2
     j = length - 1
     shifted_end = 0
     while shifted_end < 2 and j >= 0:
-        if s_list[j] != ' ':
-            s_list[j] = shift_char_forward(s_list[j])
+        if arr[j] != ' ':
+            arr[j] = shift_char_forward(arr[j])
             shifted_end += 1
         j -= 1
-    
-    return ''.join(s_list)
+
+    return ''.join(arr)
 
 def desanitize(s: str) -> str:
-    """
-    Shift the first two and the last two non-space characters backward by one.
-    """
+    if s is None:
+        return ""
+
     s = str(s)
-    s_list = list(s)
-    length = len(s_list)
-    
-    # Process the first two non-space characters
+    arr = list(s)
+    length = len(arr)
+
+    # 前 2
     i = 0
     shifted_start = 0
     while shifted_start < 2 and i < length:
-        if s_list[i] != ' ':
-            s_list[i] = shift_char_backward(s_list[i])
+        if arr[i] != ' ':
+            arr[i] = shift_char_backward(arr[i])
             shifted_start += 1
         i += 1
-    
-    # Process the last two non-space characters
+
+    # 後 2
     j = length - 1
     shifted_end = 0
     while shifted_end < 2 and j >= 0:
-        if s_list[j] != ' ':
-            s_list[j] = shift_char_backward(s_list[j])
+        if arr[j] != ' ':
+            arr[j] = shift_char_backward(arr[j])
             shifted_end += 1
         j -= 1
-    
-    return ''.join(s_list)
 
-# ===== Utility functions for column operations =====
+    return ''.join(arr)
+
+# ===== 3. memoization 快取 (在大量重複值時可顯著加速) =====
+
+def memo_sanitize(val, cache):
+    if val in cache:
+        return cache[val]
+    out = sanitize(val)
+    cache[val] = out
+    return out
+
+def memo_desanitize(val, cache):
+    if val in cache:
+        return cache[val]
+    out = desanitize(val)
+    cache[val] = out
+    return out
+
+# ===== 4. 在 Pandas DataFrame 中插入 *_sanitized 或 External Part =====
 
 def insert_sanitized_columns(df: pd.DataFrame, columns_to_add: list):
     """
-    在 df 中，對於 columns_to_add 裏列出的欄位，緊接在它後面插入一個對應的 {col}_sanitized 欄位
-    (透過 sanitize() 函式來產生新值)。
-    依欄位的 index 由大到小插入，避免影響後面欄位的插入位置。
-
-    除了對指定欄位做字串位移，會先以向量化方式把空值、空白、nan、none 轉成 'N/A'。
+    保留原欄位，並在右側插入 col_sanitized
     """
-    # 先依照原欄位在 df.columns 中的索引位置，從「大到小」排序
     columns_with_locs = [(col, df.columns.get_loc(col)) for col in columns_to_add]
     columns_with_locs.sort(key=lambda x: x[1], reverse=True)
     
     for col, loc_val in columns_with_locs:
-        # 先用向量化方法處理空白、nan、none → 'N/A'
         df[col] = df[col].fillna('N/A') \
                          .replace(r'^\s*$', 'N/A', regex=True) \
                          .replace(['none', 'nan'], 'N/A')
-
+        cache = {}
         new_col_name = f"{col}_sanitized"
-        # 再逐列呼叫 sanitize()
-        df.insert(loc_val + 1, new_col_name, df[col].apply(sanitize))
+        df.insert(loc_val + 1, new_col_name, df[col].apply(lambda x: memo_sanitize(x, cache)))
+
 
 def insert_desanitized_columns(df: pd.DataFrame, columns_to_process: list):
     """
-    在 df 中，對於 columns_to_process 裏列出的欄位，緊接在它後面插入一個對應的 'External Part' 欄位
-    (透過 desanitize() 函式來產生新值)。
-    依欄位的 index 由大到小插入，避免影響後面欄位的插入位置。
+    保留原欄位 'External part ID'，右邊插一個 'External Part' 放 desanitize 後的值
     """
     columns_with_locs = [(col, df.columns.get_loc(col)) for col in columns_to_process]
     columns_with_locs.sort(key=lambda x: x[1], reverse=True)
 
     for col, loc_val in columns_with_locs:
         if col == 'External part ID':
-            df.insert(loc_val + 1, 'External Part', df[col].apply(desanitize))
+            cache = {}
+            df.insert(loc_val + 1, 'External Part', df[col].apply(lambda x: memo_desanitize(x, cache)))
 
-# ===== New: 逐檔讀寫檔案 (不再一次全部讀進記憶體) =====
+# ===== 5. Streaming模式下 (read_only=True) —— 保留原值，並在右側插欄 =====
+
+def process_xlsx_sanitization_streaming(input_path: str, output_folder: str):
+    """
+    只讀模式逐 Sheet 讀取 .xlsx，
+    如果該檔只有1個 Sheet => 檔名不加 sheetName
+    否則 => baseName_sheetName_sanitized.csv
+
+    **在需要sanitize的欄位右側，插入 col_sanitized 欄位**。
+    """
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    wb_in = load_workbook(filename=input_path, read_only=True, data_only=True)
+
+    # 要插入 sanitized 的欄位
+    columns_to_add = [
+        'External Part',
+        'Internal Part',
+        'Internal Part(Old)',
+        'Internal Part(New)',
+        'ex_part'
+    ]
+
+    sheet_names = wb_in.sheetnames
+    sheet_count = len(sheet_names)
+
+    for i, sheet_name in enumerate(sheet_names, start=1):
+        ws_in = wb_in[sheet_name]
+
+        # 輸出檔名
+        if sheet_count == 1:
+            out_filename = f"{base_name}_sanitized.csv"
+        else:
+            out_filename = f"{base_name}_{sheet_name}_sanitized.csv"
+        out_path = os.path.join(output_folder, out_filename)
+
+        print(f"[SANITIZE] Processing sheet {i}/{sheet_count}: {sheet_name} -> {out_filename}")
+
+        with open(out_path, mode='w', newline='', encoding='utf-8-sig') as f_out:
+            writer = csv.writer(f_out)
+
+            row_idx = 0
+            # 用於判斷哪幾個欄位需要多加一個 {col}_sanitized
+            sanitize_indexes = []
+            # 建個 cache_dict 供 memo_sanitize 使用
+            cache_dict = {}
+
+            for row_tuple in ws_in.iter_rows(values_only=True):
+                row_list = list(row_tuple) if row_tuple else []
+
+                if row_idx == 0:
+                    # 第一行 => 表頭
+                    new_header = []
+                    for col_i, col_name in enumerate(row_list):
+                        new_header.append(col_name)  # 保留原欄位名
+                        if col_name in columns_to_add:
+                            # 在右邊插入 col_name + "_sanitized"
+                            sanitize_indexes.append(col_i)
+                            new_header.append(col_name + "_sanitized")
+                    writer.writerow(new_header)
+
+                else:
+                    new_row = []
+                    for col_i, val in enumerate(row_list):
+                        # 先把原值放進去
+                        new_row.append(val)
+                        # 若該欄位需要 sanitize，就多插入一格
+                        if col_i in sanitize_indexes:
+                            new_val = memo_sanitize(val, cache_dict)
+                            new_row.append(new_val)
+                    writer.writerow(new_row)
+
+                row_idx += 1
+
+    wb_in.close()
+
+
+def process_xlsx_desanitization_streaming(input_path: str, output_folder: str):
+    """
+    只讀模式逐 Sheet 讀取 .xlsx，
+    如果該檔只有1個 Sheet => 檔名不加 sheetName
+    否則 => baseName_sheetName_desanitized.csv
+
+    針對 'External part ID' 欄位，在其右側插入 'External Part'
+    """
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    wb_in = load_workbook(filename=input_path, read_only=True, data_only=True)
+    sheet_names = wb_in.sheetnames
+    sheet_count = len(sheet_names)
+
+    for i, sheet_name in enumerate(sheet_names, start=1):
+        ws_in = wb_in[sheet_name]
+        if sheet_count == 1:
+            out_filename = f"{base_name}_desanitized.csv"
+        else:
+            out_filename = f"{base_name}_{sheet_name}_desanitized.csv"
+        out_path = os.path.join(output_folder, out_filename)
+
+        print(f"[DESANITIZE] Processing sheet {i}/{sheet_count}: {sheet_name} -> {out_filename}")
+
+        with open(out_path, mode='w', newline='', encoding='utf-8-sig') as f_out:
+            writer = csv.writer(f_out)
+
+            row_idx = 0
+            desanitize_indexes = []
+            cache_dict = {}
+
+            for row_tuple in ws_in.iter_rows(values_only=True):
+                row_list = list(row_tuple) if row_tuple else []
+
+                if row_idx == 0:
+                    # 表頭
+                    new_header = []
+                    for col_i, col_name in enumerate(row_list):
+                        new_header.append(col_name)
+                        # 如果欄位名 == 'External part ID'，右邊插入 'External Part'
+                        if col_name == 'External part ID':
+                            desanitize_indexes.append(col_i)
+                            new_header.append("External Part")
+                    writer.writerow(new_header)
+                else:
+                    new_row = []
+                    for col_i, val in enumerate(row_list):
+                        new_row.append(val)
+                        if col_i in desanitize_indexes:
+                            # 產生 External Part 欄位
+                            new_val = memo_desanitize(val, cache_dict)
+                            new_row.append(new_val)
+                    writer.writerow(new_row)
+
+                row_idx += 1
+
+    wb_in.close()
+
+# ===== 6. 若是 .xlsx => streaming / 若是 .csv => DataFrame =====
 
 def process_file_sanitization(file_path: str, output_folder: str):
-    """
-    讀取單一檔案 (xlsx/csv)，對需要的欄位執行 insert_sanitized_columns 後，立刻寫出。
-    避免大量檔案同時存在記憶體中。
-    """
     base_name, ext = os.path.splitext(os.path.basename(file_path))
-    output_file_name = base_name + "_sanitized" + ext
-    output_path = os.path.join(output_folder, output_file_name)
 
     if ext.lower() == '.xlsx':
-        excel_file = pd.ExcelFile(file_path, engine='openpyxl')
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            for sheet_name in excel_file.sheet_names:
-                df = pd.read_excel(excel_file, sheet_name=sheet_name)
-                
-                #print all column names in this sheet
-                print(f"Sheet: {sheet_name} - Columns: {df.columns}")
-
-                # 需要插入 sanitized 欄位的欄位清單
-                columns_to_add = []
-                if 'External Part' in df.columns:
-                    columns_to_add.append('External Part')
-                if 'Internal Part' in df.columns:
-                    columns_to_add.append('Internal Part')
-                if 'Internal Part(Old)' in df.columns:
-                    columns_to_add.append('Internal Part(Old)')
-                if 'Internal Part(New)' in df.columns:
-                    columns_to_add.append('Internal Part(New)')
-                if "ex_part" in df.columns:
-                    columns_to_add.append("ex_part")
-
-                print("Columns to add: ", columns_to_add)
-                if columns_to_add:
-                    insert_sanitized_columns(df, columns_to_add)
-
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
-
+        process_xlsx_sanitization_streaming(file_path, output_folder)
     elif ext.lower() == '.csv':
         try:
             df = pd.read_csv(file_path, encoding='utf-8')
-        except UnicodeDecodeError:
+        except:
             df = pd.read_csv(file_path, encoding='gbk')
 
+        # 對 CSV 用 DataFrame 插欄
         columns_to_add = []
         if 'External Part' in df.columns:
             columns_to_add.append('External Part')
@@ -194,43 +304,24 @@ def process_file_sanitization(file_path: str, output_folder: str):
             columns_to_add.append('Internal Part(Old)')
         if 'Internal Part(New)' in df.columns:
             columns_to_add.append('Internal Part(New)')
-        if "ex_part" in df.columns:
-            columns_to_add.append("ex_part")
 
         if columns_to_add:
             insert_sanitized_columns(df, columns_to_add)
 
-        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        out_filename = base_name + "_sanitized.csv"
+        out_path = os.path.join(output_folder, out_filename)
+        df.to_csv(out_path, index=False, encoding='utf-8-sig')
+
 
 def process_file_desanitization(file_path: str, output_folder: str):
-    """
-    讀取單一檔案 (xlsx/csv)，對需要的欄位執行 insert_desanitized_columns 後，立刻寫出。
-    注意此需求中，檔名不改變 (不加 _sanitized)。
-    """
     base_name, ext = os.path.splitext(os.path.basename(file_path))
-    output_path = os.path.join(output_folder, base_name + ext)  # 不改變檔名
 
     if ext.lower() == '.xlsx':
-        excel_file = pd.ExcelFile(file_path, engine='openpyxl')
-        with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-            for sheet_name in excel_file.sheet_names:
-                df = pd.read_excel(excel_file, sheet_name=sheet_name)
-
-                columns_to_process = []
-                if 'External part ID' in df.columns:
-                    columns_to_process.append('External part ID')
-
-                if columns_to_process:
-                    insert_desanitized_columns(df, columns_to_process)
-                else:
-                    print(f"The file {file_path} (Sheet: {sheet_name}) does not contain sanitized columns.")
-
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
-
+        process_xlsx_desanitization_streaming(file_path, output_folder)
     elif ext.lower() == '.csv':
         try:
             df = pd.read_csv(file_path, encoding='utf-8')
-        except UnicodeDecodeError:
+        except:
             df = pd.read_csv(file_path, encoding='gbk')
 
         columns_to_process = []
@@ -242,30 +333,20 @@ def process_file_desanitization(file_path: str, output_folder: str):
         else:
             print(f"The file {file_path} does not contain sanitized columns.")
 
-        df.to_csv(output_path, index=False, encoding='utf-8-sig')
+        out_filename = base_name + "_desanitized.csv"
+        out_path = os.path.join(output_folder, out_filename)
+        df.to_csv(out_path, index=False, encoding='utf-8-sig')
 
-# ===== Main workflow functions =====
+# ===== 7. Main workflow =====
 
 def sanitize_data():
-    """
-    1. 從 'Unsanitized' 資料夾讀取所有 .xlsx/.csv 檔案 (檔案大也不怕，一次處理一檔)
-    2. 如果 'External Part'/'Internal Part'/'Internal Part(Old)'/'Internal Part(New)' 欄位存在，就插入對應的 '*_sanitized' 欄位
-    3. 將結果輸出到 'Sanitized' 資料夾，檔名加上 "_sanitized"
-    """
     print("\nSanitizing process started...")
 
     input_folder = 'Unsanitized'
     output_folder = 'Sanitized'
+    os.makedirs(output_folder, exist_ok=True)
 
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-
-    # 收集所有要處理的檔案
-    file_list = [
-        f for f in os.listdir(input_folder)
-        if f.endswith(('.xlsx', '.csv'))
-    ]
-
+    file_list = [f for f in os.listdir(input_folder) if f.endswith(('.xlsx', '.csv'))]
     if not file_list:
         print("No .xlsx or .csv files found in 'Unsanitized' folder.")
         return
@@ -273,36 +354,24 @@ def sanitize_data():
     print("\nFollowing files will be sanitized:")
     for file_name in file_list:
         print(f" - {file_name}")
-    # print()
+    print()
 
-    # 逐檔處理並輸出
     for file_name in file_list:
         file_path = os.path.join(input_folder, file_name)
-        print(f"\nProcessing file: {file_name}")
+        print(f"Processing file: {file_name}")
         process_file_sanitization(file_path, output_folder)
 
     print("\nSanitizing process completed.")
-    
+
 
 def desanitize_data():
-    """
-    1. 從 'Undesanitized' 資料夾讀取所有 .xlsx/.csv 檔案 (檔案大也不怕，一次處理一檔)
-    2. 如果 'External part ID' 欄位存在，就插入對應的 'External Part' 欄位 (desanitize)
-    3. 將結果輸出到 'Desanitized' 資料夾 (檔名不更動)
-    """
     print("\nDesanitizing process started...")
 
     input_folder = 'Undesanitized'
     output_folder = 'Desanitized'
+    os.makedirs(output_folder, exist_ok=True)
 
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-
-    file_list = [
-        f for f in os.listdir(input_folder)
-        if f.endswith(('.xlsx', '.csv'))
-    ]
-
+    file_list = [f for f in os.listdir(input_folder) if f.endswith(('.xlsx', '.csv'))]
     if not file_list:
         print("No .xlsx or .csv files found in 'Undesanitized' folder.")
         return
@@ -320,11 +389,10 @@ def desanitize_data():
 
 
 def main():
-    """
-    Main function to prompt user input and run either Sanitization or Desanitization process.
-    """
     print("Want to sanitize data? (y/n)")
     user_input = input().strip().lower()
+
+    start_time = time.time()
 
     if user_input == "y":
         sanitize_data()
@@ -332,10 +400,10 @@ def main():
         desanitize_data()
     else:
         print("Invalid input, please enter 'y' or 'n'.")
-    
+
+    #print time taken in minutes
+    print(f"\nTime taken: {round((time.time() - start_time) / 60, 2)} minutes.")
     input("\nProcessing complete. Press Enter to exit...")
 
 if __name__ == "__main__":
     main()
-
-# ex_part、
