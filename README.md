@@ -87,7 +87,7 @@ If you wish to run the script on a machine without Python installed, use `PyInst
 2. **Create the Executable**:
    - In the same directory as `Auto_sanitization.py`, run:
      ```bash
-     pyinstaller -F --icon=xxx.icon Auto_sanitization.py
+     pyinstaller -F --icon=xxx.ico Auto_sanitization.py
      ```
 
 3. **Executable Output**:
