@@ -1,0 +1,6 @@
+{
+    "external part": "external part",
+    "internal part": "internal part",
+    "internal part(old)": "internal part(old)",
+    "internal part(new)": "internal part(new)"
+}
