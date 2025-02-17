@@ -7,6 +7,3 @@ Unsanitized/*
 Undesanitized/*
 Auto_sanitization.exe
 Auto_sanitization.spec
-Auto_sanitization_manual.py
-column_desanitization.txt
-column_sanitization.txt
