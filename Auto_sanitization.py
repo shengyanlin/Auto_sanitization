@@ -157,8 +157,8 @@ SANITIZATION_COLUMNS = {
     "external part": "external_part_sanitized",
     "ex_part": "external_part_sanitized",
     "internal part": "internal_part_sanitized",
-    "internal part(old)": "internal part(old)_sanitized",
-    "internal part(new)": "internal part(new)_sanitized"
+    "internal part(old)": "internal_part(old)_sanitized",
+    "internal part(new)": "internal_part(new)_sanitized"
 }
 
 def get_sanitized_column_name(original: str) -> str:
